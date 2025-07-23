@@ -1,0 +1,20 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Build outputs
+[Bb]in/
+[Oo]bj/
+Debug/
+Release/
+x64/
+x86/
+*.exe
+*.log
+
+# OS
+Thumbs.db
+Desktop.ini
