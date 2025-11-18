@@ -261,7 +261,7 @@ int RunSingleCamera(CameraPtr pCam)
 		// Retrieve GenICam nodemap
 		INodeMap& nodeMap = pCam->GetNodeMap();
 		//===========================================================================
-				// 设置分辨率为 2048x2048
+		// 设置分辨率为 2048x2048
 		CIntegerPtr ptrWidth = nodeMap.GetNode("Width");
 		CIntegerPtr ptrHeight = nodeMap.GetNode("Height");
 		CIntegerPtr ptrOffsetX = nodeMap.GetNode("OffsetX");
