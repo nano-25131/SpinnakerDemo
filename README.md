@@ -37,7 +37,6 @@
 ```cpp
 std::string save_dir = "D:/CapturedImages/";   // 保存路径
 std::string group_name = "GroupA";             // 图片组名
-int img_index = 1;                              // 起始编号
 ```
 
 保存后的文件示例：
