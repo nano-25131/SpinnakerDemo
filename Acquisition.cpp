@@ -94,9 +94,6 @@ int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
 		std::cout << "请输入图片要保存的文件夹名称：\n";
 		std::cin >> save_folder;
 
-
-
-
 		// 设置采集模式为连续
 		CEnumerationPtr ptrAcquisitionMode = nodeMap.GetNode("AcquisitionMode");
 		CEnumEntryPtr ptrAcquisitionModeContinuous = ptrAcquisitionMode->GetEntryByName("Continuous");
@@ -118,7 +115,6 @@ int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
 		{
 			try
 			{
-
 				// 抓图（50ms 超时）
 				ImagePtr pResultImage = pCam->GetNextImage(50);
 
@@ -163,19 +159,22 @@ int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
 							cout << "ESC pressed, exiting..." << endl;
 							break;
 						}
-						else if (key == 'q' || key == 'Q')  // Q 键保存图像
+						else if (key == 32)  // Q 键保存图像
 						{
 							std::ostringstream filename;
-							filename << save_folder << "/" << group_id << "-" << image_id << ".png";
+							filename << save_folder << "/" << group_id << ".png";
+							//filename << save_folder << "/" << group_id << "-" << image_id << ".png";
 							cv::imwrite(filename.str(), cvImage);
 							cout << "Saved: " << filename.str() << endl;
 
-							image_id++;
-							if (image_id > 3)
-							{
-								image_id = 1;
-								group_id++;
-							}
+							group_id++;
+
+							//image_id++;
+							//if (image_id > 3)
+							//{
+							//	image_id = 1;
+							//	group_id++;
+							//}
 						}
 
 					}
