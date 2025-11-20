@@ -11,7 +11,11 @@ set(SOURCE_FILE "${CMAKE_SOURCE_DIR}/Acquisition.cpp")
 if(NOT EXISTS "${SOURCE_FILE}")
     message(FATAL_ERROR "Required source not found: ${SOURCE_FILE}")
 endif()
-add_executable(${PROJECT_NAME} "${SOURCE_FILE}")
+add_executable(${PROJECT_NAME} 
+    "${SOURCE_FILE}"
+    "app.rc"           # 图标资源
+)
+
 
 # ---------------------------
 # OpenCV
