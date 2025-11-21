@@ -19,7 +19,8 @@
 
 1. 安装 **Spinnaker SDK**
 2. 安装 OpenCV（用于显示与保存图像）
-3. 连接 Blackfly USB3 Camera
+3. 使用 **C++17** 版本
+4. 连接 Blackfly USB3 Camera
 
 ---
 
