@@ -3,21 +3,22 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <sstream>
-
-
+#include <filesystem>
 
 using namespace Spinnaker;
 using namespace Spinnaker::GenApi;
 using namespace Spinnaker::GenICam;
 using namespace std;
 
+namespace fs = std::filesystem;
+
 // Use the following enum to select the stream mode
 enum StreamMode
 {
 	STREAM_MODE_TELEDYNE_GIGE_VISION, // Teledyne Gige Vision is the default stream mode for spinview which is supported on Windows
-	STREAM_MODE_PGRLWF, // Light Weight Filter driver is our legacy driver which is supported on Windows
-	STREAM_MODE_SOCKET, // Socket is supported for MacOS and Linux, and uses native OS network sockets instead of a
-	// filter driver
+	STREAM_MODE_PGRLWF,				  // Light Weight Filter driver is our legacy driver which is supported on Windows
+	STREAM_MODE_SOCKET,				  // Socket is supported for MacOS and Linux, and uses native OS network sockets instead of a
+									  // filter driver
 };
 
 #if defined(WIN32) || defined(WIN64)
@@ -26,14 +27,13 @@ const StreamMode chosenStreamMode = STREAM_MODE_TELEDYNE_GIGE_VISION;
 const StreamMode chosenStreamMode = STREAM_MODE_SOCKET;
 #endif
 
-
 // This function demonstrates how we can change stream modes.
 int SetStreamMode(CameraPtr pCam)
 {
 	int result = 0;
 
 	// Retrieve Stream nodemap
-	const INodeMap& sNodeMap = pCam->GetTLStreamNodeMap();
+	const INodeMap &sNodeMap = pCam->GetTLStreamNodeMap();
 
 	// The node "StreamMode" is only available for GEV cameras.
 	// Skip setting stream mode if the node is inaccessible.
@@ -72,26 +72,37 @@ int SetStreamMode(CameraPtr pCam)
 	ptrStreamMode->SetIntValue(streamModeCustom);
 
 	// Print out the current stream mode
-	cout << endl << "Stream Mode set to " + ptrStreamMode->GetCurrentEntry()->GetSymbolic() << "..." << endl;
+	cout << endl
+		 << "Stream Mode set to " + ptrStreamMode->GetCurrentEntry()->GetSymbolic() << "..." << endl;
 
 	return 0;
 }
 
 // This function acquires and saves 10 images from a device.
-int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
+int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
 {
 	int result = 0;
-
 
 	try
 	{
 		int group_id;
-		std::cout << "请输入当前组的图片命名ID：\n";
-		std::cin >> group_id;
-		int image_id = 1;
+		std::string group_name;
 
-		std::string save_folder;   //指定保存的文件夹
-		std::cout << "请输入图片要保存的文件夹名称：\n";
+		std::cout << "图片命名前置标志字符(默认为空)：";
+		std::getline(std::cin, group_name); 
+
+		// 如果用户直接回车，group_name 就是空字符串
+		if (group_name.empty())
+		{
+			std::cout << "使用默认空前缀" << std::endl;
+		}
+
+		std::cout << "图片起始序号ID：";
+		std::cin >> group_id;
+		std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n'); 
+
+		std::string save_folder;
+		std::cout << "图片要保存的文件夹名称：";
 		std::cin >> save_folder;
 
 		// 设置采集模式为连续
@@ -109,7 +120,7 @@ int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
 		ImageProcessor processor;
 		processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
 
-		cv::namedWindow("Live View", cv::WINDOW_AUTOSIZE);  // 确保窗口创建
+		cv::namedWindow("Live View", cv::WINDOW_AUTOSIZE); // 确保窗口创建
 		// 实时图像采集循环
 		while (true)
 		{
@@ -132,16 +143,16 @@ int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
 						static_cast<int>(convertedImage->GetHeight()), // 将 size_t 转为 int，确保不会丢失数据
 						static_cast<int>(convertedImage->GetWidth()),
 						CV_8UC1,
-						convertedImage->GetData()
-					);
+						convertedImage->GetData());
 
 					// 缩小显示图像
 					cv::Mat resizedImage;
-					cv::resize(cvImage, resizedImage, cv::Size(), 0.5, 0.5);  // 缩放比例根据需要设置
+					cv::resize(cvImage, resizedImage, cv::Size(), 0.2, 0.2); // 缩放比例根据需要设置
 
 					// 显示缩小后的图像
 
-					try {
+					try
+					{
 						// 显示图像
 						if (!cvImage.empty())
 						{
@@ -154,42 +165,62 @@ int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
 
 						// 检查是否按下 ESC 键
 						int key = cv::waitKey(1);
-						if (key == 27)  // ESC 键
+						auto make_filename = [&](int id)
+						{
+							std::ostringstream filename;
+							if (group_name.empty())
+								filename << save_folder << "/" << id << ".png";
+							else
+								filename << save_folder << "/" << group_name << "_" << id << ".png";
+							return filename.str();
+						};
+
+						if (key == 27) // ESC 键
 						{
 							cout << "ESC pressed, exiting..." << endl;
 							break;
 						}
-						else if (key == 32)  // Q 键保存图像
+						else if (key == 32) // space 保存图像
 						{
-							std::ostringstream filename;
-							filename << save_folder << "/" << group_id << ".png";
-							//filename << save_folder << "/" << group_id << "-" << image_id << ".png";
-							cv::imwrite(filename.str(), cvImage);
-							cout << "Saved: " << filename.str() << endl;
+							cv::imwrite(make_filename(group_id), cvImage);
+							cout << "Saved: " << group_id << endl;
 
 							group_id++;
-
-							//image_id++;
-							//if (image_id > 3)
-							//{
-							//	image_id = 1;
-							//	group_id++;
-							//}
 						}
+						else if (key == 8 || key == 127) // 删除键
+						{
+							if (group_id > 0)
+							{
+								int delete_id = group_id - 1;
 
+								if (fs::exists(make_filename(delete_id)))
+								{
+									fs::remove(make_filename(delete_id));
+									cout << "Deleted: " << make_filename(delete_id) << endl;
+									group_id--;
+								}
+								else
+								{
+									cout << "No such file to delete: " << make_filename(delete_id) << endl;
+								}
+							}
+							else
+							{
+								cout << "No images to delete" << endl;
+							}
+						}
 					}
-					catch(cv::Exception& e){
+					catch (cv::Exception &e)
+					{
 						std::cerr << "OpenCV error: " << e.what() << std::endl;
-						break;  // 或者 return -1;
+						break; // 或者 return -1;
 					}
-
-
 				}
 
 				// 释放图像缓冲
 				pResultImage->Release();
 			}
-			catch (Spinnaker::Exception& e)
+			catch (Spinnaker::Exception &e)
 			{
 				cout << "Image error: " << e.what() << endl;
 			}
@@ -199,7 +230,7 @@ int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
 		pCam->EndAcquisition();
 		cv::destroyAllWindows();
 	}
-	catch (Spinnaker::Exception& e)
+	catch (Spinnaker::Exception &e)
 	{
 		cout << "Error: " << e.what() << endl;
 		result = -1;
@@ -208,10 +239,12 @@ int AcquireImages(CameraPtr pCam, INodeMap& nodeMap, INodeMap& nodeMapTLDevice)
 	return result;
 }
 
-int PrintDeviceInfo(INodeMap& nodeMap)
+int PrintDeviceInfo(INodeMap &nodeMap)
 {
 	int result = 0;
-	cout << endl << "*** DEVICE INFORMATION ***" << endl << endl;
+	cout << endl
+		 << "*** DEVICE INFORMATION ***" << endl
+		 << endl;
 
 	try
 	{
@@ -235,7 +268,7 @@ int PrintDeviceInfo(INodeMap& nodeMap)
 			cout << "Device control information not available." << endl;
 		}
 	}
-	catch (Spinnaker::Exception& e)
+	catch (Spinnaker::Exception &e)
 	{
 		cout << "Error: " << e.what() << endl;
 		result = -1;
@@ -251,14 +284,14 @@ int RunSingleCamera(CameraPtr pCam)
 	try
 	{
 		// Retrieve TL device nodemap and print device information
-		INodeMap& nodeMapTLDevice = pCam->GetTLDeviceNodeMap();
+		INodeMap &nodeMapTLDevice = pCam->GetTLDeviceNodeMap();
 		result = PrintDeviceInfo(nodeMapTLDevice);
 
 		// Initialize camera
 		pCam->Init();
 
 		// Retrieve GenICam nodemap
-		INodeMap& nodeMap = pCam->GetNodeMap();
+		INodeMap &nodeMap = pCam->GetNodeMap();
 		//===========================================================================
 		// 设置分辨率为 2048x2048
 		CIntegerPtr ptrWidth = nodeMap.GetNode("Width");
@@ -273,7 +306,7 @@ int RunSingleCamera(CameraPtr pCam)
 			ptrHeight->SetValue(2048);
 			cout << "Resolution set to 2048x2048..." << endl;
 
-			// 调整偏移量以居中 ROI（假设传感器支持此分辨率）
+			// 设置 偏移量，保证选取的 2048×2048 在传感器中心
 			if (IsWritable(ptrOffsetX) && IsWritable(ptrOffsetY))
 			{
 				// 计算居中偏移：(2448 - 2048) / 2 = 200, (2048 - 2048) / 2 = 0
@@ -301,7 +334,7 @@ int RunSingleCamera(CameraPtr pCam)
 		// Deinitialize camera
 		pCam->DeInit();
 	}
-	catch (Spinnaker::Exception& e)
+	catch (Spinnaker::Exception &e)
 	{
 		cout << "Error: " << e.what() << endl;
 		result = -1;
@@ -310,16 +343,16 @@ int RunSingleCamera(CameraPtr pCam)
 	return result;
 }
 
-int main(int /*argc*/, char** /*argv*/)
+int main(int /*argc*/, char ** /*argv*/)
 {
 	//=========================测试权限============================================
-	FILE* tempFile = fopen("test.txt", "w+");
+	FILE *tempFile = fopen("test.txt", "w+");
 	if (tempFile == nullptr)
 	{
 
 		cout << "Failed to create file in current folder.  Please check "
-			"permissions."
-			<< endl;
+				"permissions."
+			 << endl;
 		cout << "Press Enter to exit..." << endl;
 		getchar();
 		return -1;
@@ -327,8 +360,9 @@ int main(int /*argc*/, char** /*argv*/)
 	fclose(tempFile);
 	remove("test.txt");
 	//============================================================================
-		// Print application build information
-	cout << "Application build date: " << __DATE__ << " " << __TIME__ << endl << endl;
+	// Print application build information
+	cout << "Application build date: " << __DATE__ << " " << __TIME__ << endl
+		 << endl;
 
 	// Retrieve singleton reference to system object
 	SystemPtr system = System::GetInstance();
@@ -336,15 +370,16 @@ int main(int /*argc*/, char** /*argv*/)
 	// Print out current library version
 	const LibraryVersion spinnakerLibraryVersion = system->GetLibraryVersion();
 	cout << "Spinnaker library version: " << spinnakerLibraryVersion.major << "." << spinnakerLibraryVersion.minor
-		<< "." << spinnakerLibraryVersion.type << "." << spinnakerLibraryVersion.build << endl
-		<< endl;
+		 << "." << spinnakerLibraryVersion.type << "." << spinnakerLibraryVersion.build << endl
+		 << endl;
 
 	// Retrieve list of cameras from the system
 	CameraList camList = system->GetCameras();
 
 	const unsigned int numCameras = camList.GetSize();
 
-	cout << "Number of cameras detected: " << numCameras << endl << endl;
+	cout << "Number of cameras detected: " << numCameras << endl
+		 << endl;
 
 	// Finish if there are no cameras
 	if (numCameras == 0)
@@ -366,19 +401,16 @@ int main(int /*argc*/, char** /*argv*/)
 
 	int result = 0;
 
-	// Run example on each camera
-	for (unsigned int i = 0; i < numCameras; i++)
-	{
-		// Select camera
-		pCam = camList.GetByIndex(i);
+	// 获取相机列表中的第一个相机
+	pCam = camList.GetByIndex(0);
 
-		cout << endl << "Running example for camera " << i << "..." << endl;
+	cout << "Running example for camera 0..." << endl;
 
-		// Run example
-		result = result | RunSingleCamera(pCam);
+	// 运行相机示例
+	result = RunSingleCamera(pCam);
 
-		cout << "Camera " << i << " example complete..." << endl << endl;
-	}
+	cout << "Camera 0 example complete." << endl;
+
 	pCam = nullptr;
 
 	// Clear camera list before releasing system
@@ -387,7 +419,8 @@ int main(int /*argc*/, char** /*argv*/)
 	// Release system
 	system->ReleaseInstance();
 
-	cout << endl << "Done! Press Enter to exit..." << endl;
+	cout << endl
+		 << "Done! Press Enter to exit..." << endl;
 	getchar();
 
 	return result;
