@@ -4,6 +4,10 @@
 #include <iostream>
 #include <sstream>
 #include <filesystem>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstring>
 
 using namespace Spinnaker;
 using namespace Spinnaker::GenApi;
@@ -12,6 +16,19 @@ using namespace std;
 
 namespace fs = std::filesystem;
 
+#define SHM_NAME "/spinnaker_img"
+#define SHM_WIDTH 64
+#define SHM_HEIGHT 64
+#define SHM_CHANNELS 1
+#define SHM_IMG_SIZE (SHM_WIDTH * SHM_HEIGHT * SHM_CHANNELS)
+
+struct ShmImage {
+    int ready;      // 0: writing, 1: ready
+    int width;
+    int height;
+    int channels;
+    unsigned char data[SHM_IMG_SIZE];
+};
 // Use the following enum to select the stream mode
 enum StreamMode
 {
@@ -79,32 +96,12 @@ int SetStreamMode(CameraPtr pCam)
 }
 
 // This function acquires and saves 10 images from a device.
-int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
+int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice, ShmImage* shm)
 {
 	int result = 0;
 
 	try
 	{
-		int group_id;
-		std::string group_name;
-
-		std::cout << "图片命名前置标志字符(默认为空)：";
-		std::getline(std::cin, group_name); 
-
-		// 如果用户直接回车，group_name 就是空字符串
-		if (group_name.empty())
-		{
-			std::cout << "使用默认空前缀" << std::endl;
-		}
-
-		std::cout << "图片起始序号ID：";
-		std::cin >> group_id;
-		std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n'); 
-
-		std::string save_folder;
-		std::cout << "图片要保存的文件夹名称：";
-		std::cin >> save_folder;
-
 		// 设置采集模式为连续
 		CEnumerationPtr ptrAcquisitionMode = nodeMap.GetNode("AcquisitionMode");
 		CEnumEntryPtr ptrAcquisitionModeContinuous = ptrAcquisitionMode->GetEntryByName("Continuous");
@@ -120,7 +117,7 @@ int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
 		ImageProcessor processor;
 		processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
 
-		cv::namedWindow("Live View", cv::WINDOW_AUTOSIZE); // 确保窗口创建
+		//cv::namedWindow("Live View", cv::WINDOW_AUTOSIZE); // 确保窗口创建
 		// 实时图像采集循环
 		while (true)
 		{
@@ -145,9 +142,19 @@ int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
 						CV_8UC1,
 						convertedImage->GetData());
 
+					//输入网络的图像
+					cv::Mat netImage;
+					cv::resize(
+    						cvImage,
+    						netImage,
+    						cv::Size(64, 64),   // 🔥 明确指定目标尺寸
+    						0, 0,
+    						cv::INTER_LINEAR
+						);
+					CV_Assert(netImage.isContinuous());
 					// 缩小显示图像
-					cv::Mat resizedImage;
-					cv::resize(cvImage, resizedImage, cv::Size(), 0.2, 0.2); // 缩放比例根据需要设置
+					//cv::Mat resizedImage;
+					//cv::resize(cvImage, resizedImage, cv::Size(), 0.2, 0.2); // 缩放比例根据需要设置
 
 					// 显示缩小后的图像
 
@@ -156,7 +163,18 @@ int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
 						// 显示图像
 						if (!cvImage.empty())
 						{
-							cv::imshow("Live View", resizedImage);
+							// ======== Write to Shared Memory ========
+							shm->ready = 0;  // lock
+
+							memcpy(
+    								shm->data,
+    								netImage.data,
+								SHM_IMG_SIZE
+							);
+
+							shm->ready = 1;  // unlock
+							// =======================================
+							//cv::imshow("Live View", resizedImage);
 						}
 						else
 						{
@@ -165,49 +183,10 @@ int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
 
 						// 检查是否按下 ESC 键
 						int key = cv::waitKey(1);
-						auto make_filename = [&](int id)
-						{
-							std::ostringstream filename;
-							if (group_name.empty())
-								filename << save_folder << "/" << id << ".png";
-							else
-								filename << save_folder << "/" << group_name << "_" << id << ".png";
-							return filename.str();
-						};
-
 						if (key == 27) // ESC 键
 						{
 							cout << "ESC pressed, exiting..." << endl;
 							break;
-						}
-						else if (key == 32) // space 保存图像
-						{
-							cv::imwrite(make_filename(group_id), cvImage);
-							cout << "Saved: " << group_id << endl;
-
-							group_id++;
-						}
-						else if (key == 8 || key == 127) // 删除键
-						{
-							if (group_id > 0)
-							{
-								int delete_id = group_id - 1;
-
-								if (fs::exists(make_filename(delete_id)))
-								{
-									fs::remove(make_filename(delete_id));
-									cout << "Deleted: " << make_filename(delete_id) << endl;
-									group_id--;
-								}
-								else
-								{
-									cout << "No such file to delete: " << make_filename(delete_id) << endl;
-								}
-							}
-							else
-							{
-								cout << "No images to delete" << endl;
-							}
 						}
 					}
 					catch (cv::Exception &e)
@@ -277,7 +256,7 @@ int PrintDeviceInfo(INodeMap &nodeMap)
 	return result;
 }
 
-int RunSingleCamera(CameraPtr pCam)
+int RunSingleCamera(CameraPtr pCam, ShmImage* shm)
 {
 	int result;
 
@@ -329,7 +308,7 @@ int RunSingleCamera(CameraPtr pCam)
 		result = result | SetStreamMode(pCam);
 
 		// Acquire images
-		result = result | AcquireImages(pCam, nodeMap, nodeMapTLDevice);
+		result = result | AcquireImages(pCam, nodeMap, nodeMapTLDevice, shm);
 
 		// Deinitialize camera
 		pCam->DeInit();
@@ -397,6 +376,35 @@ int main(int /*argc*/, char ** /*argv*/)
 		return -1;
 	}
 
+// ================== Shared Memory Init ==================
+	int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+	if (shm_fd < 0) {
+    		perror("shm_open");
+    		return -1;
+	}
+
+	ftruncate(shm_fd, sizeof(ShmImage));
+
+	ShmImage* shm = (ShmImage*)mmap(
+    		nullptr,
+    		sizeof(ShmImage),
+    		PROT_READ | PROT_WRITE,
+    		MAP_SHARED,
+    		shm_fd,
+    		0
+	);
+
+	if (shm == MAP_FAILED) {
+    		perror("mmap");
+    		return -1;
+	}
+
+	shm->width = SHM_WIDTH;
+	shm->height = SHM_HEIGHT;
+	shm->channels = SHM_CHANNELS;
+	shm->ready = 0;
+// ========================================================
+
 	CameraPtr pCam = nullptr;
 
 	int result = 0;
@@ -407,7 +415,7 @@ int main(int /*argc*/, char ** /*argv*/)
 	cout << "Running example for camera 0..." << endl;
 
 	// 运行相机示例
-	result = RunSingleCamera(pCam);
+	result = RunSingleCamera(pCam, shm);
 
 	cout << "Camera 0 example complete." << endl;
 
@@ -418,6 +426,21 @@ int main(int /*argc*/, char ** /*argv*/)
 
 	// Release system
 	system->ReleaseInstance();
+
+	// ================== Shared Memory Cleanup ==================
+	if (shm != nullptr)
+	{
+		munmap(shm, sizeof(ShmImage));
+	}
+
+
+	if (shm_fd >= 0)
+	{
+		close(shm_fd);
+	}
+	//是否 unlink 取决于你的使用方式
+	//shm_unlink(SHM_NAME); // ❌ 不推荐默认打开
+	//===========================================================
 
 	cout << endl
 		 << "Done! Press Enter to exit..." << endl;

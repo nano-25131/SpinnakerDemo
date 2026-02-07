@@ -65,7 +65,7 @@ else()
         "${SPINNAKER_DIR}/lib/libSpinnaker.so*"
         "${SPINNAKER_DIR}/lib/libGenApi*.so*"
     )
-    target_link_libraries(${PROJECT_NAME} PRIVATE ${SPINNAKER_LIBS} pthread)
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${SPINNAKER_LIBS} pthread rt)
 endif()
 
 # ---------------------------
