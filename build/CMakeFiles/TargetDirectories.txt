@@ -1,0 +1,3 @@
+/home/pung/workspace/Spinnaker/build/CMakeFiles/rebuild_cache.dir
+/home/pung/workspace/Spinnaker/build/CMakeFiles/edit_cache.dir
+/home/pung/workspace/Spinnaker/build/CMakeFiles/SpinnakerAcquisition.dir
