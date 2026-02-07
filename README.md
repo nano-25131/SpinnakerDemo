@@ -13,7 +13,7 @@ struct ShmImage {
 };
 ```
 
- 运行程序后，直接运行**show.py**即可看到图像，想改变大小可通过#define SHM_WIDTH/SHM_HEIGHT 64 改变，同步的show.py也需要改变
+ 运行程序后，直接运行**show.py**即可看到图像，想改变大小可通过Acquisition.cpp里面的#define SHM_WIDTH/SHM_HEIGHT 64 改变，同步的show.py也需要改变
 
 ---
 
