@@ -2,8 +2,6 @@
 #include "SpinGenApi/SpinnakerGenApi.h"
 #include <opencv2/opencv.hpp>
 #include <iostream>
-#include <sstream>
-#include <filesystem>
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -11,440 +9,161 @@
 
 using namespace Spinnaker;
 using namespace Spinnaker::GenApi;
-using namespace Spinnaker::GenICam;
 using namespace std;
 
-namespace fs = std::filesystem;
-
 #define SHM_NAME "/spinnaker_img"
-#define SHM_WIDTH 64
-#define SHM_HEIGHT 64
+#define SHM_WIDTH 128
+#define SHM_HEIGHT 128
 #define SHM_CHANNELS 1
 #define SHM_IMG_SIZE (SHM_WIDTH * SHM_HEIGHT * SHM_CHANNELS)
 
+// 🔥 双缓冲
 struct ShmImage {
-    int ready;      // 0: writing, 1: ready
+    int write_idx;
     int width;
     int height;
     int channels;
-    unsigned char data[SHM_IMG_SIZE];
-};
-// Use the following enum to select the stream mode
-enum StreamMode
-{
-	STREAM_MODE_TELEDYNE_GIGE_VISION, // Teledyne Gige Vision is the default stream mode for spinview which is supported on Windows
-	STREAM_MODE_PGRLWF,				  // Light Weight Filter driver is our legacy driver which is supported on Windows
-	STREAM_MODE_SOCKET,				  // Socket is supported for MacOS and Linux, and uses native OS network sockets instead of a
-									  // filter driver
+    unsigned char data[2][SHM_IMG_SIZE];
 };
 
-#if defined(WIN32) || defined(WIN64)
-const StreamMode chosenStreamMode = STREAM_MODE_TELEDYNE_GIGE_VISION;
-#else
-const StreamMode chosenStreamMode = STREAM_MODE_SOCKET;
-#endif
-
-// This function demonstrates how we can change stream modes.
-int SetStreamMode(CameraPtr pCam)
+// ================= 采集函数 =================
+int AcquireImages(CameraPtr pCam, ShmImage* shm)
 {
-	int result = 0;
+    int result = 0;
 
-	// Retrieve Stream nodemap
-	const INodeMap &sNodeMap = pCam->GetTLStreamNodeMap();
+    try
+    {
+        ImageProcessor processor;
+        processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
 
-	// The node "StreamMode" is only available for GEV cameras.
-	// Skip setting stream mode if the node is inaccessible.
-	const CEnumerationPtr ptrStreamMode = sNodeMap.GetNode("StreamMode");
-	if (!IsReadable(ptrStreamMode) || !IsWritable(ptrStreamMode))
-	{
-		return 0;
-	}
+        cout << "Start acquiring images..." << endl;
 
-	gcstring streamMode;
-	switch (chosenStreamMode)
-	{
-	case STREAM_MODE_PGRLWF:
-		streamMode = "LWF";
-		break;
-	case STREAM_MODE_SOCKET:
-		streamMode = "Socket";
-		break;
-	case STREAM_MODE_TELEDYNE_GIGE_VISION:
-	default:
-		streamMode = "TeledyneGigeVision";
-	}
+        while (true)
+        {
+            try
+            {
+                ImagePtr pResultImage = pCam->GetNextImage(50);
 
-	// Retrieve the desired entry node from the enumeration node
-	const CEnumEntryPtr ptrStreamModeCustom = ptrStreamMode->GetEntryByName(streamMode);
-	if (!IsReadable(ptrStreamModeCustom))
-	{
-		// Failed to get custom node
-		cout << "Stream mode " + streamMode + " not available.  Aborting..." << endl;
-		return -1;
-	}
-	// Retrieve the integer value from the entry node
-	const int64_t streamModeCustom = ptrStreamModeCustom->GetValue();
+                if (!pResultImage->IsIncomplete())
+                {
+                    ImagePtr converted = processor.Convert(pResultImage, PixelFormat_Mono8);
 
-	// Set integer as new value for enumeration node
-	ptrStreamMode->SetIntValue(streamModeCustom);
+                    cv::Mat cvImage(
+                        (int)converted->GetHeight(),
+                        (int)converted->GetWidth(),
+                        CV_8UC1,
+                        converted->GetData()
+                    );
 
-	// Print out the current stream mode
-	cout << endl
-		 << "Stream Mode set to " + ptrStreamMode->GetCurrentEntry()->GetSymbolic() << "..." << endl;
+                    // 🔥 resize 到 128×128
+                    cv::Mat netImage;
+                    cv::resize(cvImage, netImage, cv::Size(128, 128), 0, 0, cv::INTER_LINEAR);
 
-	return 0;
+                    CV_Assert(netImage.isContinuous());
+
+                    // ========== 双缓冲写 ==========
+                    int next = 1 - shm->write_idx;
+
+                    memcpy(
+                        shm->data[next],
+                        netImage.data,
+                        SHM_IMG_SIZE
+                    );
+
+                    // 🔥 最后切换（关键）
+                    shm->write_idx = next;
+                }
+
+                pResultImage->Release();
+            }
+            catch (Spinnaker::Exception &e)
+            {
+                cout << "Image error: " << e.what() << endl;
+            }
+        }
+
+        pCam->EndAcquisition();
+    }
+    catch (Spinnaker::Exception &e)
+    {
+        cout << "Error: " << e.what() << endl;
+        result = -1;
+    }
+
+    return result;
 }
 
-// This function acquires and saves 10 images from a device.
-int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice, ShmImage* shm)
+// ================= 主函数 =================
+int main()
 {
-	int result = 0;
+    SystemPtr system = System::GetInstance();
+    CameraList camList = system->GetCameras();
 
-	try
-	{
-		// 设置采集模式为连续
-		CEnumerationPtr ptrAcquisitionMode = nodeMap.GetNode("AcquisitionMode");
-		CEnumEntryPtr ptrAcquisitionModeContinuous = ptrAcquisitionMode->GetEntryByName("Continuous");
-		const int64_t acquisitionModeContinuous = ptrAcquisitionModeContinuous->GetValue();
-		ptrAcquisitionMode->SetIntValue(acquisitionModeContinuous);
-		cout << "Acquisition mode set to continuous..." << endl;
+    if (camList.GetSize() == 0)
+    {
+        cout << "No camera found!" << endl;
+        return -1;
+    }
 
-		// 启动采集
-		pCam->BeginAcquisition();
-		cout << "Start acquiring images (press ESC to exit)..." << endl;
+    // ===== 共享内存 =====
+    int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd, sizeof(ShmImage));
 
-		// 初始化图像处理器
-		ImageProcessor processor;
-		processor.SetColorProcessing(SPINNAKER_COLOR_PROCESSING_ALGORITHM_HQ_LINEAR);
+    ShmImage* shm = (ShmImage*)mmap(
+        nullptr,
+        sizeof(ShmImage),
+        PROT_READ | PROT_WRITE,
+        MAP_SHARED,
+        shm_fd,
+        0
+    );
 
-		//cv::namedWindow("Live View", cv::WINDOW_AUTOSIZE); // 确保窗口创建
-		// 实时图像采集循环
-		while (true)
-		{
-			try
-			{
-				// 抓图（50ms 超时）
-				ImagePtr pResultImage = pCam->GetNextImage(50);
+    if (shm == MAP_FAILED)
+    {
+        perror("mmap");
+        return -1;
+    }
 
-				if (pResultImage->IsIncomplete())
-				{
-					cout << "Image incomplete: " << Image::GetImageStatusDescription(pResultImage->GetImageStatus()) << endl;
-				}
-				else
-				{
-					// 转换为 8 位灰度图像
-					ImagePtr convertedImage = processor.Convert(pResultImage, PixelFormat_Mono8);
+    shm->width = SHM_WIDTH;
+    shm->height = SHM_HEIGHT;
+    shm->channels = SHM_CHANNELS;
+    shm->write_idx = 0;
 
-					// 转换为 OpenCV Mat
-					cv::Mat cvImage(
-						static_cast<int>(convertedImage->GetHeight()), // 将 size_t 转为 int，确保不会丢失数据
-						static_cast<int>(convertedImage->GetWidth()),
-						CV_8UC1,
-						convertedImage->GetData());
+    // ===== 相机 =====
+    CameraPtr pCam = camList.GetByIndex(0);
+    pCam->Init();
 
-					//输入网络的图像
-					cv::Mat netImage;
-					cv::resize(
-    						cvImage,
-    						netImage,
-    						cv::Size(64, 64),   // 🔥 明确指定目标尺寸
-    						0, 0,
-    						cv::INTER_LINEAR
-						);
-					CV_Assert(netImage.isContinuous());
-					// 缩小显示图像
-					//cv::Mat resizedImage;
-					//cv::resize(cvImage, resizedImage, cv::Size(), 0.2, 0.2); // 缩放比例根据需要设置
+    INodeMap &nodeMap = pCam->GetNodeMap();
 
-					// 显示缩小后的图像
+    // 🔥 在 BeginAcquisition 之前设置！（修复你的报错）
+    CEnumerationPtr ptrAcquisitionMode = nodeMap.GetNode("AcquisitionMode");
+    if (IsWritable(ptrAcquisitionMode))
+    {
+        ptrAcquisitionMode->SetIntValue(
+            ptrAcquisitionMode->GetEntryByName("Continuous")->GetValue()
+        );
+        cout << "Acquisition mode set to Continuous\n";
+    }
+    else
+    {
+        cout << "Warning: AcquisitionMode not writable\n";
+    }
 
-					try
-					{
-						// 显示图像
-						if (!cvImage.empty())
-						{
-							// ======== Write to Shared Memory ========
-							shm->ready = 0;  // lock
+    // 🔥 开始采集（一定在设置之后）
+    pCam->BeginAcquisition();
 
-							memcpy(
-    								shm->data,
-    								netImage.data,
-								SHM_IMG_SIZE
-							);
+    // ===== 开始循环 =====
+    AcquireImages(pCam, shm);
 
-							shm->ready = 1;  // unlock
-							// =======================================
-							//cv::imshow("Live View", resizedImage);
-						}
-						else
-						{
-							std::cerr << "cvImage is empty!" << std::endl;
-						}
+    // 清理
+    pCam->EndAcquisition();
+    pCam->DeInit();
 
-						// 检查是否按下 ESC 键
-						int key = cv::waitKey(1);
-						if (key == 27) // ESC 键
-						{
-							cout << "ESC pressed, exiting..." << endl;
-							break;
-						}
-					}
-					catch (cv::Exception &e)
-					{
-						std::cerr << "OpenCV error: " << e.what() << std::endl;
-						break; // 或者 return -1;
-					}
-				}
+    munmap(shm, sizeof(ShmImage));
+    close(shm_fd);
 
-				// 释放图像缓冲
-				pResultImage->Release();
-			}
-			catch (Spinnaker::Exception &e)
-			{
-				cout << "Image error: " << e.what() << endl;
-			}
-		}
+    camList.Clear();
+    system->ReleaseInstance();
 
-		// 停止采集
-		pCam->EndAcquisition();
-		cv::destroyAllWindows();
-	}
-	catch (Spinnaker::Exception &e)
-	{
-		cout << "Error: " << e.what() << endl;
-		result = -1;
-	}
-
-	return result;
-}
-
-int PrintDeviceInfo(INodeMap &nodeMap)
-{
-	int result = 0;
-	cout << endl
-		 << "*** DEVICE INFORMATION ***" << endl
-		 << endl;
-
-	try
-	{
-		FeatureList_t features;
-		const CCategoryPtr category = nodeMap.GetNode("DeviceInformation");
-		if (IsReadable(category))
-		{
-			category->GetFeatures(features);
-
-			for (auto it = features.begin(); it != features.end(); ++it)
-			{
-				const CNodePtr pfeatureNode = *it;
-				cout << pfeatureNode->GetName() << " : ";
-				CValuePtr pValue = static_cast<CValuePtr>(pfeatureNode);
-				cout << (IsReadable(pValue) ? pValue->ToString() : "Node not readable");
-				cout << endl;
-			}
-		}
-		else
-		{
-			cout << "Device control information not available." << endl;
-		}
-	}
-	catch (Spinnaker::Exception &e)
-	{
-		cout << "Error: " << e.what() << endl;
-		result = -1;
-	}
-
-	return result;
-}
-
-int RunSingleCamera(CameraPtr pCam, ShmImage* shm)
-{
-	int result;
-
-	try
-	{
-		// Retrieve TL device nodemap and print device information
-		INodeMap &nodeMapTLDevice = pCam->GetTLDeviceNodeMap();
-		result = PrintDeviceInfo(nodeMapTLDevice);
-
-		// Initialize camera
-		pCam->Init();
-
-		// Retrieve GenICam nodemap
-		INodeMap &nodeMap = pCam->GetNodeMap();
-		//===========================================================================
-		// 设置分辨率为 2048x2048
-		CIntegerPtr ptrWidth = nodeMap.GetNode("Width");
-		CIntegerPtr ptrHeight = nodeMap.GetNode("Height");
-		CIntegerPtr ptrOffsetX = nodeMap.GetNode("OffsetX");
-		CIntegerPtr ptrOffsetY = nodeMap.GetNode("OffsetY");
-
-		if (IsWritable(ptrWidth) && IsWritable(ptrHeight))
-		{
-			// 设置宽度和高度为 2048
-			ptrWidth->SetValue(2048);
-			ptrHeight->SetValue(2048);
-			cout << "Resolution set to 2048x2048..." << endl;
-
-			// 设置 偏移量，保证选取的 2048×2048 在传感器中心
-			if (IsWritable(ptrOffsetX) && IsWritable(ptrOffsetY))
-			{
-				// 计算居中偏移：(2448 - 2048) / 2 = 200, (2048 - 2048) / 2 = 0
-				ptrOffsetX->SetValue(200); // 水平居中
-				ptrOffsetY->SetValue(0);   // 垂直居中（高度无需偏移）
-				cout << "Offset set to X: " << ptrOffsetX->GetValue() << ", Y: " << ptrOffsetY->GetValue() << "..." << endl;
-			}
-			else
-			{
-				cout << "Warning: OffsetX or OffsetY not writable, ROI may not be centered." << endl;
-			}
-		}
-		else
-		{
-			cout << "Error: Width or Height not writable, cannot set resolution to 2048x2048." << endl;
-			result = -1;
-		}
-		//===========================================================================
-		// Set stream mode
-		result = result | SetStreamMode(pCam);
-
-		// Acquire images
-		result = result | AcquireImages(pCam, nodeMap, nodeMapTLDevice, shm);
-
-		// Deinitialize camera
-		pCam->DeInit();
-	}
-	catch (Spinnaker::Exception &e)
-	{
-		cout << "Error: " << e.what() << endl;
-		result = -1;
-	}
-
-	return result;
-}
-
-int main(int /*argc*/, char ** /*argv*/)
-{
-	//=========================测试权限============================================
-	FILE *tempFile = fopen("test.txt", "w+");
-	if (tempFile == nullptr)
-	{
-
-		cout << "Failed to create file in current folder.  Please check "
-				"permissions."
-			 << endl;
-		cout << "Press Enter to exit..." << endl;
-		getchar();
-		return -1;
-	}
-	fclose(tempFile);
-	remove("test.txt");
-	//============================================================================
-	// Print application build information
-	cout << "Application build date: " << __DATE__ << " " << __TIME__ << endl
-		 << endl;
-
-	// Retrieve singleton reference to system object
-	SystemPtr system = System::GetInstance();
-
-	// Print out current library version
-	const LibraryVersion spinnakerLibraryVersion = system->GetLibraryVersion();
-	cout << "Spinnaker library version: " << spinnakerLibraryVersion.major << "." << spinnakerLibraryVersion.minor
-		 << "." << spinnakerLibraryVersion.type << "." << spinnakerLibraryVersion.build << endl
-		 << endl;
-
-	// Retrieve list of cameras from the system
-	CameraList camList = system->GetCameras();
-
-	const unsigned int numCameras = camList.GetSize();
-
-	cout << "Number of cameras detected: " << numCameras << endl
-		 << endl;
-
-	// Finish if there are no cameras
-	if (numCameras == 0)
-	{
-		// Clear camera list before releasing system
-		camList.Clear();
-
-		// Release system
-		system->ReleaseInstance();
-
-		cout << "Not enough cameras!" << endl;
-		cout << "Done! Press Enter to exit..." << endl;
-		getchar();
-
-		return -1;
-	}
-
-// ================== Shared Memory Init ==================
-	int shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
-	if (shm_fd < 0) {
-    		perror("shm_open");
-    		return -1;
-	}
-
-	ftruncate(shm_fd, sizeof(ShmImage));
-
-	ShmImage* shm = (ShmImage*)mmap(
-    		nullptr,
-    		sizeof(ShmImage),
-    		PROT_READ | PROT_WRITE,
-    		MAP_SHARED,
-    		shm_fd,
-    		0
-	);
-
-	if (shm == MAP_FAILED) {
-    		perror("mmap");
-    		return -1;
-	}
-
-	shm->width = SHM_WIDTH;
-	shm->height = SHM_HEIGHT;
-	shm->channels = SHM_CHANNELS;
-	shm->ready = 0;
-// ========================================================
-
-	CameraPtr pCam = nullptr;
-
-	int result = 0;
-
-	// 获取相机列表中的第一个相机
-	pCam = camList.GetByIndex(0);
-
-	cout << "Running example for camera 0..." << endl;
-
-	// 运行相机示例
-	result = RunSingleCamera(pCam, shm);
-
-	cout << "Camera 0 example complete." << endl;
-
-	pCam = nullptr;
-
-	// Clear camera list before releasing system
-	camList.Clear();
-
-	// Release system
-	system->ReleaseInstance();
-
-	// ================== Shared Memory Cleanup ==================
-	if (shm != nullptr)
-	{
-		munmap(shm, sizeof(ShmImage));
-	}
-
-
-	if (shm_fd >= 0)
-	{
-		close(shm_fd);
-	}
-	//是否 unlink 取决于你的使用方式
-	//shm_unlink(SHM_NAME); // ❌ 不推荐默认打开
-	//===========================================================
-
-	cout << endl
-		 << "Done! Press Enter to exit..." << endl;
-	getchar();
-
-	return result;
+    return 0;
 }
