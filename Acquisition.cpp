@@ -135,7 +135,6 @@ int main()
 
     INodeMap &nodeMap = pCam->GetNodeMap();
 
-    // 🔥 在 BeginAcquisition 之前设置！（修复你的报错）
     CEnumerationPtr ptrAcquisitionMode = nodeMap.GetNode("AcquisitionMode");
     if (IsWritable(ptrAcquisitionMode))
     {
