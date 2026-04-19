@@ -88,21 +88,21 @@ int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
 		int group_id;
 		std::string group_name;
 
-		std::cout << "图片命名前置标志字符(默认为空)：";
+		std::cout << "Image filename prefix (default: empty):";
 		std::getline(std::cin, group_name); 
 
 		// 如果用户直接回车，group_name 就是空字符串
 		if (group_name.empty())
 		{
-			std::cout << "使用默认空前缀" << std::endl;
+			std::cout << "Use default empty prefix" << std::endl;
 		}
 
-		std::cout << "图片起始序号ID：";
+		std::cout << "Starting image index ID:";
 		std::cin >> group_id;
 		std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n'); 
 
 		std::string save_folder;
-		std::cout << "图片要保存的文件夹名称：";
+		std::cout << "Image save folder path:";
 		std::cin >> save_folder;
 
 		// 设置采集模式为连续
