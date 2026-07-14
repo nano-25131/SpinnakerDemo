@@ -137,6 +137,8 @@ int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
 				{
 					// 转换为 8 位灰度图像
 					ImagePtr convertedImage = processor.Convert(pResultImage, PixelFormat_Mono8);
+					// 释放图像缓冲，已经从buffer pool里面进行了拷贝，可以释放buffer pool里面的
+					pResultImage->Release();
 
 					// 转换为 OpenCV Mat
 					cv::Mat cvImage(
@@ -216,9 +218,6 @@ int AcquireImages(CameraPtr pCam, INodeMap &nodeMap, INodeMap &nodeMapTLDevice)
 						break; // 或者 return -1;
 					}
 				}
-
-				// 释放图像缓冲
-				pResultImage->Release();
 			}
 			catch (Spinnaker::Exception &e)
 			{
